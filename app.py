@@ -332,9 +332,17 @@ with bar2:
     if st.button("↩ Сбросить фильтры", use_container_width=True):
         st.session_state.source_filter = "ALL"; st.session_state.level_filter = "ALL"; reset_limit(); st.rerun()
 
-nav_all, nav_archive, nav_search, nav_stats = st.tabs(["📚 Публикации", "🕘 Архив", "🔎 Поиск", "📊 Источники"])
+# ---------- LAZY NAVIGATION (mobile-friendly) ----------
+# Unlike st.tabs(), only the selected section is rendered.
+section = st.radio(
+    "Раздел",
+    ["📚 Публикации", "🕘 Архив", "🔎 Поиск", "📊 Источники"],
+    horizontal=True,
+    label_visibility="collapsed",
+    key="main_section",
+)
 
-with nav_all:
+if section == "📚 Публикации":
     rows = [x for x in everything if source_ok(x) and level_ok(x)]
     rows.sort(key=lambda x: (x.get("bca_score", 0), str(x.get("date", ""))), reverse=True)
     st.markdown(f"### Публикации — {len(rows)}")
@@ -350,7 +358,7 @@ with nav_all:
         if st.button("Показать ещё 20", key="more_main", use_container_width=True):
             st.session_state.limit += 20; st.rerun()
 
-with nav_archive:
+elif section == "🕘 Архив":
     archive_rows = list(data["archive"])
     st.markdown(f"### Архив публикаций — {len(archive_rows)}")
     st.caption("Здесь сохраняются публикации, которые монитор уже видел. Фильтры архива не меняют фильтры главной страницы.")
@@ -406,7 +414,7 @@ with nav_archive:
         if st.button("Показать ещё 20", key="more_archive", use_container_width=True):
             st.session_state.archive_limit += 20; st.rerun()
 
-with nav_search:
+elif section == "🔎 Поиск":
     st.markdown("### Глобальный поиск по всему BCA-архиву")
     st.caption("Можно выбрать готовую тему или написать любой собственный запрос. Верхние фильтры главной страницы на поиск не влияют.")
     universal_topics = [
@@ -443,7 +451,7 @@ with nav_search:
         st.caption(f"Найдено: {len(rows)} · показаны первые {min(20,len(rows))} · тема: {chosen_topic} · {relevance_choice}")
         for i,x in enumerate(rows[:20]): card(x, f"search_v7_{i}", allow_diff=True)
 
-with nav_stats:
+elif section == "📊 Источники":
     st.markdown("### Статистика по источникам")
     st.caption("Нажмите ВСЕ / 🟢 / 🟡 / 🔴 — публикации выбранного источника сразу появятся ниже.")
     sources = sorted({x.get("source", "—") for x in everything})
@@ -471,4 +479,3 @@ with nav_stats:
         st.caption(f"Показаны первые {min(20, len(rows))} публикаций. Каждая публикация кликабельна через кнопку «Открыть источник». ")
         for i, x in enumerate(rows[:20]):
             card(x, f"stats_{source}_{lev}_{i}")
-

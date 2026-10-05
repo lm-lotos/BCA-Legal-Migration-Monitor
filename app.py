@@ -54,12 +54,50 @@ def safe_call(fn, fallback):
         return fallback
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_data():
-    laws = safe_call(fetch_updates, {"all_publications": [], "results": []})
+# ---------- FAST START + MANUAL REFRESH ----------
+
+def load_saved_data():
+    """Быстрый запуск: читаем только уже сохранённые данные из SQLite."""
+    archive = db_all_rows() or []
+
+    official = [
+        x for x in archive
+        if x.get("source_group") == "official"
+    ]
+    media = [
+        x for x in archive
+        if x.get("source_group") == "media"
+    ]
+
+    return {
+        "official": official,
+        "media": media,
+        "all": official + media,
+        "archive": archive,
+        "media_errors": {},
+    }
+
+
+def refresh_data():
+    """Полное обновление из внешних источников — только по кнопке."""
+    laws = safe_call(
+        fetch_updates,
+        {"all_publications": [], "results": []}
+    )
+
     raw_official = list(laws.get("all_publications", []))
-    richer = {x.get("url"): x for x in laws.get("results", []) if x.get("url")}
-    raw_official = [{**x, **richer.get(x.get("url"), {})} for x in raw_official]
+
+    richer = {
+        x.get("url"): x
+        for x in laws.get("results", [])
+        if x.get("url")
+    }
+
+    raw_official = [
+        {**x, **richer.get(x.get("url"), {})}
+        for x in raw_official
+    ]
+
     raw_official += list(safe_call(get_lea_publications, []) or [])
     raw_official += list(safe_call(fetch_bamf_publications, []) or [])
     raw_official += list(safe_call(fetch_ba_publications, []) or [])
@@ -67,24 +105,40 @@ def load_data():
     raw_official += list(safe_call(fetch_bundestag_publications, []) or [])
     raw_official += list(safe_call(fetch_federal_publications, []) or [])
 
-    media_result = safe_call(fetch_media_publications, {"publications": [], "errors": {}})
+    media_result = safe_call(
+        fetch_media_publications,
+        {"publications": [], "errors": {}}
+    )
+
     official = filter_relevant(raw_official)
     media = filter_relevant(media_result.get("publications", []))
+
     for x in official:
         x["source_group"] = "official"
+
     for x in media:
         x["source_group"] = "media"
+
     combined = official + media
-    # Keep the legacy JSON archive for compatibility, but persist/search via SQLite.
+
     legacy_archive = merge_archive(combined)
     db_upsert(legacy_archive)
-    archive = db_all_rows()
-    return {"official": official, "media": media, "all": combined, "archive": archive,
-            "media_errors": media_result.get("errors", {})}
+
+    return {
+        "official": official,
+        "media": media,
+        "all": combined,
+        "archive": db_all_rows(),
+        "media_errors": media_result.get("errors", {}),
+    }
 
 
-data = load_data()
-official, media, everything = data["official"], data["media"], data["all"]
+# При обычном открытии приложения НИКУДА в интернет не идём.
+data = load_saved_data()
+
+official = data["official"]
+media = data["media"]
+everything = data["all"]
 
 for key, value in {"source_filter": "ALL", "level_filter": "ALL", "limit": 20, "archive_limit": 20, "stats_source": None, "stats_level": "ALL"}.items():
     if key not in st.session_state:
@@ -216,7 +270,10 @@ with h2:
 r1, r2 = st.columns([1, 5])
 with r1:
     if st.button("🔄 Проверить сейчас", use_container_width=True):
-        st.cache_data.clear(); st.rerun()
+        with st.spinner("Проверяю источники и обновляю архив…"):
+            refresh_data()
+        st.success("Данные обновлены.")
+        st.rerun()
 with r2:
     st.caption(f"Автообновление: 60 мин. · {datetime.now().strftime('%d.%m.%Y %H:%M')}")
 

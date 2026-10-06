@@ -12,10 +12,29 @@ from bs4 import BeautifulSoup
 HEADERS = {"User-Agent": "Mozilla/5.0 BCA-Legal-Migration-Monitor/1.0"}
 
 MEDIA_SOURCES = {
+    # Federal / nationwide newsrooms
+    "Tagesschau": ("tagesschau.de", ["Migration Deutschland", "Fachkräfte Einwanderung", "Aufenthaltsrecht Einbürgerung"]),
+    "ZDFheute": ("zdf.de", ["Migration Deutschland", "Fachkräfte Deutschland", "Einbürgerung Aufenthaltsrecht"]),
+    "Deutschlandfunk": ("deutschlandfunk.de", ["Migration Deutschland", "Fachkräfte Einwanderung", "Asyl Einbürgerung"]),
     "DW": ("dw.com", ["Migration Deutschland", "Aufenthaltsrecht Deutschland", "Einbürgerung Deutschland"]),
-    "rbb24": ("rbb24.de", ["Migration Berlin", "Ausländerbehörde Berlin", "Einbürgerung Berlin"]),
-    "Tagesspiegel": ("tagesspiegel.de", ["Migration Deutschland", "Aufenthaltsrecht", "Einbürgerung"]),
+    "SPIEGEL": ("spiegel.de", ["Migration Deutschland", "Fachkräfte Einwanderung", "Asyl Einbürgerung"]),
+    "ZEIT": ("zeit.de", ["Migration Deutschland", "Fachkräfte Einwanderung", "Aufenthaltsrecht Einbürgerung"]),
+    "Süddeutsche": ("sueddeutsche.de", ["Migration Deutschland", "Fachkräfte Einwanderung", "Asyl Einbürgerung"]),
+    "FAZ": ("faz.net", ["Migration Deutschland", "Fachkräfte Einwanderung", "Aufenthaltsrecht Einbürgerung"]),
     "Handelsblatt": ("handelsblatt.com", ["Fachkräfte Einwanderung", "Arbeitsmigration Deutschland", "Blue Card Deutschland"]),
+    "WELT": ("welt.de", ["Migration Deutschland", "Fachkräfte Einwanderung", "Asyl Einbürgerung"]),
+    "Tagesspiegel": ("tagesspiegel.de", ["Migration Deutschland", "Aufenthaltsrecht", "Einbürgerung"]),
+
+    # Regional public-service coverage (the nine ARD Landesrundfunkanstalten)
+    "WDR": ("wdr.de", ["Migration NRW", "Fachkräfte NRW", "Einbürgerung NRW"]),
+    "NDR": ("ndr.de", ["Migration Norddeutschland", "Fachkräfte Norddeutschland", "Einbürgerung"]),
+    "BR24": ("br.de", ["Migration Bayern", "Fachkräfte Bayern", "Einbürgerung Bayern"]),
+    "SWR": ("swr.de", ["Migration Baden-Württemberg Rheinland-Pfalz", "Fachkräfte", "Einbürgerung"]),
+    "MDR": ("mdr.de", ["Migration Sachsen Sachsen-Anhalt Thüringen", "Fachkräfte", "Einbürgerung"]),
+    "rbb24": ("rbb24.de", ["Migration Berlin Brandenburg", "Ausländerbehörde Berlin", "Einbürgerung Berlin"]),
+    "hr": ("hessenschau.de", ["Migration Hessen", "Fachkräfte Hessen", "Einbürgerung Hessen"]),
+    "Radio Bremen": ("butenunbinnen.de", ["Migration Bremen", "Fachkräfte Bremen", "Einbürgerung Bremen"]),
+    "SR": ("sr.de", ["Migration Saarland", "Fachkräfte Saarland", "Einbürgerung Saarland"]),
 }
 
 
@@ -50,6 +69,8 @@ def _fetch(source: str, domain: str, query: str, limit: int = 18) -> list[dict]:
                 "summary": _clean(item.findtext("description")),
                 "url": link,
                 "date": _date(item.findtext("pubDate")),
+                "date_verified": True,
+                "date_source": "google_news_rss",
                 "source": source,
                 "source_type": "media",
             })

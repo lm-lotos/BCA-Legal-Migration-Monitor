@@ -37,6 +37,8 @@ def fetch_bundestag_publications(limit_per_feed=20):
                     "title": title,
                     "url": link,
                     "date": published,
+                    "date_verified": bool(published),
+                    "date_source": "bundestag_rss",
                     "summary": summary,
                     "source": "Bundestag",
                     "category": category,

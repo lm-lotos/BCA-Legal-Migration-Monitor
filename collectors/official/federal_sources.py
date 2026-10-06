@@ -65,6 +65,8 @@ def _feed_items(source: str, urls: list[str], limit: int) -> list[dict]:
                     "title": title,
                     "url": link,
                     "date": e.get("published", e.get("updated", "")),
+                    "date_verified": bool(e.get("published", e.get("updated", ""))),
+                    "date_source": "federal_rss",
                     "summary": _clean_html(e.get("summary", e.get("description", ""))),
                     "source": source,
                     "category": "Bundesquelle",

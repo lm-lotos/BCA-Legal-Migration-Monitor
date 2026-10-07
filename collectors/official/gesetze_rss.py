@@ -796,11 +796,6 @@ def get_document_title(url):
 def fetch_updates():
     feed = feedparser.parse(RSS_URL)
 
-    print("BCA Legal Monitor")
-    print("=" * 60)
-    print(f"Источник: {feed.feed.get('title', 'Gesetze im Internet')}")
-    print(f"Найдено публикаций: {len(feed.entries)}")
-    print("=" * 60)
 
     relevant_entries = []
     results = []
@@ -823,8 +818,6 @@ def fetch_updates():
         if is_relevant(text):
             relevant_entries.append(entry)
 
-    print(f"Кандидатов для BCA-проверки: {len(relevant_entries)}")
-    print("=" * 60)
 
     final_relevant_count = 0
 
@@ -869,50 +862,7 @@ def fetch_updates():
 
         signals = classify_signals(full_text)
 
-        print()  
-        print("Название:", title)
-        print("Документ:", document_title)
-        print("BCA SCORE:", relevance["score"])
-        print(
-              "Темы BCA:",
-              ", ".join(relevance["topics"]) if relevance["topics"] else "—"
-        )
-        print(
-              "Сильные BCA-сигналы:",
-              ", ".join(relevance["strong_matches"])
-        if relevance["strong_matches"]
-        else "—"
-        )
-        print(
-              "Почему релевантно:",
-              ", ".join(relevance["reasons"])
-        if relevance["reasons"]
-        else "—"
-      )
-        print("Ключевые темы:", ", ".join(keywords) if keywords else "—")
-        print(
-            "🟢 Возможности:",
-            ", ".join(signals["opportunity"])
-            if signals["opportunity"]
-            else "—"
-        )
-        print(
-            "🟡 Важно:",
-            ", ".join(signals["important"])
-            if signals["important"]
-            else "—"
-        )
-        print(
-            "🔴 Риски:",
-            ", ".join(signals["risk"])
-            if signals["risk"]
-            else "—"
-        )
-        print("Дата:", entry.get("published", ""))
-        print("Ссылка:", entry.get("link", ""))
-
-    print("=" * 60)
-    print(f"Релевантных для BCA: {final_relevant_count}")
+    print(f"[GESETZE] feed: {len(feed.entries)} | candidates: {len(relevant_entries)} | relevant: {final_relevant_count}", flush=True)
 
     return {
         "total_publications": len(feed.entries),

@@ -1,8 +1,10 @@
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor
 
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import re
+import time
 import streamlit as st
 
 from collectors.official.gesetze_rss import fetch_updates
@@ -16,7 +18,10 @@ from collectors.media.media import fetch_media_publications, MEDIA_SOURCES
 from processing.translator import translate_text
 from processing.relevance import filter_relevant, light, counts
 from processing.archive_store import merge_archive
-from processing.archive_db import upsert as db_upsert, all_rows as db_all_rows
+from processing.archive_db import (
+    upsert as db_upsert, all_rows as db_all_rows,
+    record_source_check, latest_source_checks, prune_source_checks,
+)
 from processing.publication_dates import enrich_publication_date
 from legal_diff.diff_renderer import render_diff, DIFF_CSS
 from legal_diff.version_fetcher import build_legal_comparison
@@ -142,68 +147,91 @@ def load_saved_data():
     }
 
 def refresh_data():
-    """Полное обновление из внешних источников — только по кнопке."""
-    laws = safe_call(
-        fetch_updates,
-        {"all_publications": [], "results": []}
-    )
+    """Poll sources, remember new hits, then rebuild the 48h feed from SQLite memory."""
+    total_started = time.perf_counter()
+    print("\n" + "=" * 72)
+    print("[REFRESH] START")
+    print("=" * 72, flush=True)
 
+    def collect(name, fn, fallback):
+        started = time.perf_counter()
+        try:
+            value = fn()
+            if isinstance(value, dict):
+                n = len(value.get("publications", value.get("all_publications", [])) or [])
+            else:
+                n = len(value or [])
+            record_source_check(name, "ok", n, "")
+            print(f"[SOURCE] {name:<28} {time.perf_counter()-started:7.2f}s | found: {n}", flush=True)
+            return value
+        except Exception as exc:
+            record_source_check(name, "error", 0, str(exc))
+            print(f"[ERROR ] {name:<28} {time.perf_counter()-started:7.2f}s | {exc}", flush=True)
+            return fallback
+
+    laws = collect("Gesetze im Internet", fetch_updates, {"all_publications": [], "results": []})
     raw_official = list(laws.get("all_publications", []))
+    richer = {x.get("url"): x for x in laws.get("results", []) if x.get("url")}
+    raw_official = [{**x, **richer.get(x.get("url"), {})} for x in raw_official]
 
-    richer = {
-        x.get("url"): x
-        for x in laws.get("results", [])
-        if x.get("url")
-    }
-
-    raw_official = [
-        {**x, **richer.get(x.get("url"), {})}
-        for x in raw_official
+    official_collectors = [
+        ("LEA Berlin", get_lea_publications),
+        ("BAMF", fetch_bamf_publications),
+        ("Bundesagentur für Arbeit", fetch_ba_publications),
+        ("BA Weisungen", fetch_ba_weisungen),
+        ("Bundestag", fetch_bundestag_publications),
+        ("Federal sources", fetch_federal_publications),
     ]
+    for name, fn in official_collectors:
+        raw_official += list(collect(name, fn, []) or [])
 
-    raw_official += list(safe_call(get_lea_publications, []) or [])
-    raw_official += list(safe_call(fetch_bamf_publications, []) or [])
-    raw_official += list(safe_call(fetch_ba_publications, []) or [])
-    raw_official += list(safe_call(fetch_ba_weisungen, []) or [])
-    raw_official += list(safe_call(fetch_bundestag_publications, []) or [])
-    raw_official += list(safe_call(fetch_federal_publications, []) or [])
+    media_started = time.perf_counter()
+    try:
+        media_result = fetch_media_publications()
+        media_rows = list(media_result.get("publications", []) or [])
+        media_errors = dict(media_result.get("errors", {}) or {})
+        by_source = {}
+        for row in media_rows:
+            by_source[row.get("source") or "Media"] = by_source.get(row.get("source") or "Media", 0) + 1
+        for source in MEDIA_SOURCES.keys():
+            if source in media_errors:
+                record_source_check(source, "error", by_source.get(source, 0), media_errors[source])
+            else:
+                record_source_check(source, "ok", by_source.get(source, 0), "")
+        print(f"[SOURCE] {'Media total':<28} {time.perf_counter()-media_started:7.2f}s | found: {len(media_rows)}", flush=True)
+    except Exception as exc:
+        media_rows, media_errors = [], {"Media": str(exc)}
+        for source in MEDIA_SOURCES.keys():
+            record_source_check(source, "error", 0, str(exc))
+        print(f"[ERROR ] {'Media total':<28} {time.perf_counter()-media_started:7.2f}s | {exc}", flush=True)
 
-    media_result = safe_call(
-        fetch_media_publications,
-        {"publications": [], "errors": {}}
-    )
-
+    relevance_started = time.perf_counter()
     official = filter_relevant(raw_official)
-    media = filter_relevant(media_result.get("publications", []))
+    media = filter_relevant(media_rows)
+    print(f"[STEP  ] {'Relevance filtering':<28} {time.perf_counter()-relevance_started:7.2f}s | official: {len(official)}, media: {len(media)}", flush=True)
 
-    # Verify the publication's own date before anything can enter the fresh monitor.
-    # This prevents an old page resurfacing in an RSS/feed from looking "new" today.
-    official = [enrich_publication_date(x) for x in official]
-    media = [enrich_publication_date(x) for x in media]
-
+    dates_started = time.perf_counter()
+    # Keep the exact same candidate set, but verify independent pages concurrently.
+    # executor.map preserves input order, so UI/result semantics stay unchanged.
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        official = list(pool.map(enrich_publication_date, official))
+        media = list(pool.map(enrich_publication_date, media))
+    print(f"[STEP  ] {'Date verification':<28} {time.perf_counter()-dates_started:7.2f}s | items: {len(official)+len(media)}", flush=True)
     for x in official:
         x["source_group"] = "official"
-
     for x in media:
         x["source_group"] = "media"
 
-    # Strict brief: only verified publications from the last 48 hours are stored/displayed.
-    official = _fresh_rows(official, hours=48)
-    media = _fresh_rows(media, hours=48)
-    combined = sorted(
-        official + media,
-        key=lambda x: x.get("_publication_dt") or datetime.min.replace(tzinfo=timezone.utc),
-        reverse=True,
-    )
-
-    db_upsert(combined)
-
-    return {
-        "official": official,
-        "media": media,
-        "all": combined,
-        "media_errors": media_result.get("errors", {}),
-    }
+    db_started = time.perf_counter()
+    verified = [x for x in official + media if x.get("date_verified") and _publication_dt(x.get("date"))]
+    db_upsert(verified)
+    prune_source_checks(days=30)
+    data = load_saved_data()
+    data["media_errors"] = media_errors
+    print(f"[STEP  ] {'DB save + rebuild':<28} {time.perf_counter()-db_started:7.2f}s | verified: {len(verified)}, fresh: {len(data['all'])}", flush=True)
+    print(f"[REFRESH] TOTAL {time.perf_counter()-total_started:.2f}s", flush=True)
+    print("=" * 72 + "\n", flush=True)
+    return data
 
 
 # При обычном открытии приложения НИКУДА в интернет не идём.
@@ -487,6 +515,8 @@ with source_tab:
         ("Bundesregierung", "Bundesregierung"),
     ]
 
+    check_map = {x["source"]: x for x in latest_source_checks()}
+
     counts_by_source = {}
     latest_by_source = {}
     for item in everything:
@@ -496,6 +526,14 @@ with source_tab:
         if dt and (name not in latest_by_source or dt > latest_by_source[name]):
             latest_by_source[name] = dt
 
+    def check_note(source):
+        c = check_map.get(source)
+        if not c:
+            return "ещё не проверялся"
+        if c.get("status") == "error":
+            return "⚠️ ошибка последней проверки"
+        return "✓ источник проверен"
+
     left, right = st.columns(2)
     with left:
         st.markdown("#### 🏛 Официальные источники")
@@ -503,7 +541,7 @@ with source_tab:
             count = counts_by_source.get(source, 0)
             latest = latest_by_source.get(source)
             latest_text = latest.astimezone().strftime("%d.%m.%Y %H:%M") if latest else "нет свежих публикаций"
-            st.markdown(f"**{source} · {count}**  \n{description}  \n<span class='small-note'>{latest_text}</span>", unsafe_allow_html=True)
+            st.markdown(f"**{source} · {count}**  \n{description}  \n<span class='small-note'>{latest_text} · {check_note(source)}</span>", unsafe_allow_html=True)
 
     with right:
         st.markdown("#### 📰 СМИ")
@@ -511,4 +549,4 @@ with source_tab:
             count = counts_by_source.get(source, 0)
             latest = latest_by_source.get(source)
             latest_text = latest.astimezone().strftime("%d.%m.%Y %H:%M") if latest else "нет свежих публикаций"
-            st.markdown(f"**{source} · {count}**  \n<span class='small-note'>{latest_text}</span>", unsafe_allow_html=True)
+            st.markdown(f"**{source} · {count}**  \n<span class='small-note'>{latest_text} · {check_note(source)}</span>", unsafe_allow_html=True)

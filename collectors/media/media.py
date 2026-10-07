@@ -5,6 +5,7 @@ from email.utils import parsedate_to_datetime
 from urllib.parse import quote_plus
 import re
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from bs4 import BeautifulSoup
@@ -78,18 +79,28 @@ def _fetch(source: str, domain: str, query: str, limit: int = 18) -> list[dict]:
 
 
 def fetch_media_publications(per_source_limit: int = 40) -> dict:
+    """Fetch the same broad candidate set as before, but run RSS requests concurrently."""
     publications = []
     errors = {}
-    for source, (domain, queries) in MEDIA_SOURCES.items():
-        collected = []
-        for query in queries:
+
+    jobs = []
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        for source, (domain, queries) in MEDIA_SOURCES.items():
+            for query in queries:
+                jobs.append((source, pool.submit(_fetch, source, domain, query)))
+
+        by_source = {source: [] for source in MEDIA_SOURCES}
+        for source, future in jobs:
             try:
-                collected.extend(_fetch(source, domain, query))
+                by_source[source].extend(future.result())
             except Exception as exc:
                 errors[source] = str(exc)
+
+    # Preserve the old per-source de-duplication and limits exactly.
+    for source in MEDIA_SOURCES:
         seen = set()
         count = 0
-        for row in collected:
+        for row in by_source.get(source, []):
             key = re.sub(r"\W+", "", row["title"].lower())[:180]
             if not key or key in seen:
                 continue
@@ -98,4 +109,5 @@ def fetch_media_publications(per_source_limit: int = 40) -> dict:
             count += 1
             if count >= per_source_limit:
                 break
+
     return {"publications": publications, "errors": errors, "fetched_at": datetime.now(timezone.utc).isoformat()}

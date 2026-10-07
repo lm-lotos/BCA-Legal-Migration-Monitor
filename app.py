@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import re
 import time
+import threading
 import streamlit as st
 
 from collectors.official.gesetze_rss import fetch_updates
@@ -169,7 +170,37 @@ def refresh_data():
             print(f"[ERROR ] {name:<28} {time.perf_counter()-started:7.2f}s | {exc}", flush=True)
             return fallback
 
-    laws = collect("Gesetze im Internet", fetch_updates, {"all_publications": [], "results": []})
+    # Gesetze works quickly locally but can hang for >2 minutes from Streamlit Cloud.
+    # Enforce a real wall-clock limit without removing the source from monitoring.
+    laws_box = {}
+    laws_error = {}
+
+    def _run_gesetze():
+        try:
+            laws_box["value"] = fetch_updates()
+        except Exception as exc:
+            laws_error["error"] = exc
+
+    gesetze_started = time.perf_counter()
+    gesetze_thread = threading.Thread(target=_run_gesetze, daemon=True)
+    gesetze_thread.start()
+    gesetze_thread.join(timeout=12)
+
+    if gesetze_thread.is_alive():
+        laws = {"all_publications": [], "results": []}
+        record_source_check("Gesetze im Internet", "error", 0, "Timeout after 12s")
+        print(f"[TIMEOUT] {'Gesetze im Internet':<28} {time.perf_counter()-gesetze_started:7.2f}s | skipped this refresh", flush=True)
+    elif "error" in laws_error:
+        laws = {"all_publications": [], "results": []}
+        exc = laws_error["error"]
+        record_source_check("Gesetze im Internet", "error", 0, str(exc))
+        print(f"[ERROR ] {'Gesetze im Internet':<28} {time.perf_counter()-gesetze_started:7.2f}s | {exc}", flush=True)
+    else:
+        laws = laws_box.get("value") or {"all_publications": [], "results": []}
+        n = len(laws.get("all_publications", []) or [])
+        record_source_check("Gesetze im Internet", "ok", n, "")
+        print(f"[SOURCE] {'Gesetze im Internet':<28} {time.perf_counter()-gesetze_started:7.2f}s | found: {n}", flush=True)
+
     raw_official = list(laws.get("all_publications", []))
     richer = {x.get("url"): x for x in laws.get("results", []) if x.get("url")}
     raw_official = [{**x, **richer.get(x.get("url"), {})} for x in raw_official]

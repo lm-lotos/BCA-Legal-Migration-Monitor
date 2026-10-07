@@ -182,8 +182,20 @@ def refresh_data():
         ("Bundestag", fetch_bundestag_publications),
         ("Federal sources", fetch_federal_publications),
     ]
-    for name, fn in official_collectors:
-        raw_official += list(collect(name, fn, []) or [])
+
+    # Independent official sources are fetched concurrently so one slow source
+    # does not force all the others to wait behind it.
+    with ThreadPoolExecutor(max_workers=len(official_collectors)) as pool:
+        official_futures = [
+            (name, pool.submit(collect, name, fn, []))
+            for name, fn in official_collectors
+        ]
+        for name, future in official_futures:
+            try:
+                raw_official += list(future.result() or [])
+            except Exception as exc:
+                record_source_check(name, "error", 0, str(exc))
+                print(f"[ERROR ] {name:<28} collector future | {exc}", flush=True)
 
     media_started = time.perf_counter()
     try:

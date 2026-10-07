@@ -1,6 +1,7 @@
 import feedparser
 import requests
 import re
+from concurrent.futures import ThreadPoolExecutor
 from bs4 import BeautifulSoup
 
 RSS_URL = "https://www.gesetze-im-internet.de/aktuDienst-rss-feed.xml"
@@ -794,7 +795,9 @@ def get_document_title(url):
 
 
 def fetch_updates():
-    feed = feedparser.parse(RSS_URL)
+    response = requests.get(RSS_URL, timeout=(3, 8))
+    response.raise_for_status()
+    feed = feedparser.parse(response.content)
 
 
     relevant_entries = []
@@ -821,19 +824,12 @@ def fetch_updates():
 
     final_relevant_count = 0
 
-    for entry in relevant_entries:
+    def process_entry(entry):
         title = entry.get("title", "")
         summary = entry.get("summary", "")
-        text = f"{title} {summary}"
-
         link = entry.get("link", "")
         document_title = get_document_title(link)
         full_text = f"{title} {summary} {document_title}"
-
-        for publication in all_publications:
-            if publication.get("url") == link:
-                publication["document_title"] = document_title
-                break
 
         keywords = find_keywords(full_text)
         relevance = calculate_relevance(full_text)
@@ -845,7 +841,7 @@ def fetch_updates():
         else:
             relevance_level = "LOW"
 
-        results.append({
+        result = {
             "title": title,
             "document_title": document_title,
             "date": entry.get("published", ""),
@@ -855,12 +851,21 @@ def fetch_updates():
             "topics": relevance["topics"],
             "strong_matches": relevance["strong_matches"],
             "reasons": relevance["reasons"],
-        })
+        }
+        return link, document_title, result
 
-        if relevance_level in ("HIGH", "POSSIBLE"):
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        processed_entries = list(pool.map(process_entry, relevant_entries))
+
+    for link, document_title, result in processed_entries:
+        for publication in all_publications:
+            if publication.get("url") == link:
+                publication["document_title"] = document_title
+                break
+
+        results.append(result)
+        if result["relevance_level"] in ("HIGH", "POSSIBLE"):
             final_relevant_count += 1
-
-        signals = classify_signals(full_text)
 
     print(f"[GESETZE] feed: {len(feed.entries)} | candidates: {len(relevant_entries)} | relevant: {final_relevant_count}", flush=True)
 
